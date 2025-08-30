@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* Prevent horizontal scrollbar caused by absolute/rotated elements */
+html, body, #root {
+	min-height: 100%;
+	overflow-x: hidden;
+}

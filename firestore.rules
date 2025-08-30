@@ -1,0 +1,76 @@
+// Firestore Security Rules for Habit Tracker
+// Deploy these rules to your Firestore database
+// Go to Firestore Console > Rules and paste this content
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidUserData() {
+      return request.resource.data.keys().hasAll(['createdAt', 'ownerId']) &&
+             request.resource.data.ownerId == request.auth.uid;
+    }
+    
+    function isValidCardData() {
+      return request.resource.data.keys().hasAll(['title', 'createdAt', 'ownerId']) &&
+             request.resource.data.ownerId == request.auth.uid &&
+             request.resource.data.title is string &&
+             request.resource.data.title.size() <= 100;
+    }
+    
+    // User data - each user can only access their own data
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+      
+      // User's habit cards
+      match /cards/{cardId} {
+        allow read, write: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidCardData();
+        allow update: if isOwner(userId) && isValidCardData();
+        allow delete: if isOwner(userId);
+      }
+      
+      // User preferences and settings
+      match /preferences/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+      
+      // User analytics data (read-only for user, write-only for server)
+      match /analytics/{document=**} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Only server can write analytics
+      }
+    }
+    
+    // Public read-only data (app configuration, announcements, etc.)
+    match /public/{document=**} {
+      allow read: if true;
+      allow write: if false; // Only admins via Firebase console
+    }
+    
+    // App metadata and configuration
+    match /config/{document=**} {
+      allow read: if true;
+      allow write: if false; // Only admins via Firebase console
+    }
+    
+    // Admin-only collections
+    match /admin/{document=**} {
+      allow read, write: if false; // Only server-side functions
+    }
+    
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
