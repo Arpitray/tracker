@@ -2,7 +2,7 @@
 // Login page component
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { loginUser, signInWithGoogle } from '../lib/firebaseClient';
+import { loginUser, signInWithGoogle, createOrUpdateUserDoc } from '../lib/firebaseClient_Enhanced';
 
 function Login({ onLogin }) {
   const navigate = useNavigate();
@@ -17,6 +17,10 @@ function Login({ onLogin }) {
     setError('');
     try {
       const user = await loginUser(email, password);
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       // normalize user object
       const userData = { id: user.uid, email: user.email, name: user.displayName || user.email.split('@')[0], photoURL: user.photoURL };
       onLogin(userData);
@@ -33,6 +37,10 @@ function Login({ onLogin }) {
     setError('');
     try {
       const user = await signInWithGoogle();
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = { id: user.uid, email: user.email, name: user.displayName || user.email.split('@')[0], photoURL: user.photoURL };
       onLogin(userData);
       navigate('/dashboard');

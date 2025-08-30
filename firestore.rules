@@ -21,33 +21,60 @@ service cloud.firestore {
     }
     
     function isValidCardData() {
-      return request.resource.data.keys().hasAll(['title', 'createdAt', 'ownerId']) &&
-             request.resource.data.ownerId == request.auth.uid &&
-             request.resource.data.title is string &&
-             request.resource.data.title.size() <= 100;
+      return request.resource.data.ownerId == request.auth.uid &&
+             (
+               // For creation: must have title and createdAt
+               (request.resource.data.keys().hasAll(['title', 'createdAt']) && 
+                request.resource.data.title is string &&
+                request.resource.data.title.size() <= 100) ||
+               // For updates: just need ownerId and updatedAt (title is optional)
+               request.resource.data.keys().hasAny(['updatedAt', 'completions', 'progress', 'streak'])
+             );
     }
     
     // User data - each user can only access their own data
     match /users/{userId} {
+      // Allow access to the root user document for the owner
       allow read, write: if isOwner(userId);
-      
+
       // User's habit cards
       match /cards/{cardId} {
         allow read, write: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidCardData();
-        allow update: if isOwner(userId) && isValidCardData();
-        allow delete: if isOwner(userId);
       }
-      
-      // User preferences and settings
+
+      // Profile subcollection (users/{uid}/profile/info)
+      match /profile/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Settings and preferences (some clients use settings/preferences)
+      match /settings/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Backwards-compatible preferences path
       match /preferences/{document=**} {
         allow read, write: if isOwner(userId);
       }
-      
-      // User analytics data (read-only for user, write-only for server)
+
+      // Completions (recorded completion events)
+      match /completions/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Categories
+      match /categories/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Goals
+      match /goals/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Analytics - allow owner to write/read analytics events
       match /analytics/{document=**} {
-        allow read: if isOwner(userId);
-        allow write: if false; // Only server can write analytics
+        allow read, write: if isOwner(userId);
       }
     }
     

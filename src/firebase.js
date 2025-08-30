@@ -1,6 +1,8 @@
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -43,6 +45,10 @@ if (!hasAllEnv(envConfig)) {
 
 const app = initializeApp(firebaseConfig);
 
+// Export auth and firestore instances for convenience
+const auth = getAuth(app);
+const db = getFirestore(app);
+
 // Analytics may not be available in all environments (e.g. during SSR)
 let analytics = null;
 try {
@@ -51,4 +57,4 @@ try {
   // ignore in non-browser environments or if analytics disabled
 }
 
-export { app, analytics };
+export { app, analytics, auth, db };

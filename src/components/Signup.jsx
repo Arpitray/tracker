@@ -2,7 +2,7 @@
 // Signup page component
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { registerUser, signInWithGoogle } from '../lib/firebaseClient';
+import { registerUser, signInWithGoogle, createOrUpdateUserDoc } from '../lib/firebaseClient_Enhanced';
 
 function Signup({ onLogin }) {
   const navigate = useNavigate();
@@ -30,6 +30,10 @@ function Signup({ onLogin }) {
     setLoading(true);
     try {
       const user = await registerUser(email, password);
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user, { displayName: name });
+      
       const userData = { id: user.uid, email: user.email, name: name || user.email.split('@')[0], photoURL: user.photoURL };
       onLogin(userData);
       navigate('/dashboard');
@@ -45,6 +49,10 @@ function Signup({ onLogin }) {
     setError('');
     try {
       const user = await signInWithGoogle();
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = { id: user.uid, email: user.email, name: user.displayName || user.email.split('@')[0], photoURL: user.photoURL };
       onLogin(userData);
       navigate('/dashboard');

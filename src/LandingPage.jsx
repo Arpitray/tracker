@@ -1,6 +1,7 @@
 // LandingPage.jsx
 // Layout and navbar for the landing page
 import React, { useState, useRef, useEffect } from 'react';
+import { auth } from './firebase';
 import { flushSync } from 'react-dom';
 import HabitCard from './components/HabitCard';
 
@@ -68,24 +69,8 @@ function LandingPage({ user, onLogout }) {
 function SingleCardArea({ user }) {
   const STORAGE_KEY = `tracker.cards.v1.${user?.id || 'guest'}`;
 
-  const [cards, setCards] = useState(() => [
-    {
-      id: 1,
-      title: 'Important tasks?',
-      completed: false,
-  streak: 0,
-      details: 'This is a sample habit. Double-click to edit.',
-      progress: 30,
-      deadline: null,
-      completions: 0,
-      x: 0,
-      y: 0,
-      ownerId: user?.id || 'guest',
-  createdAt: Date.now(),
-  manualProgress: true,
-      editing: false,
-    },
-  ]);
+  // start with no cards; user will create the first card with the + button
+  const [cards, setCards] = useState(() => []);
 
   // load persisted cards: if user logged in, listen to Firestore; otherwise use localStorage
   useEffect(() => {
@@ -97,7 +82,7 @@ function SingleCardArea({ user }) {
         if (!raw) return;
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const normalized = parsed.map((c) => ({ ...c, createdAt: c.createdAt ? Number(new Date(c.createdAt).getTime()) : Date.now(), editing: false }));
+          const normalized = parsed.map((c) => ({ ...c, createdAt: c.createdAt ? Number(new Date(c.createdAt).getTime()) : Date.now(), editing: false, manualProgress: typeof c.manualProgress === 'undefined' ? true : c.manualProgress }));
           setCards(normalized);
         }
       } catch (e) {
@@ -109,11 +94,42 @@ function SingleCardArea({ user }) {
     if (user && user.id) {
       // listen to Firestore user cards
       try {
-        const { listenUserCards } = require('./lib/firebaseClient');
-        unsub = listenUserCards(user.id, (items) => {
-          // normalize doc ids as id
-          const mapped = items.map((d) => ({ ...d, id: d.id }));
-          setCards(mapped);
+        // Use dynamic import instead of require
+        import('./lib/firebaseClient_Enhanced').then(({ listenUserCards }) => {
+          unsub = listenUserCards(user.id, (items) => {
+            console.log('Firestore listener received items:', items);
+            // normalize doc ids as id and default manualProgress when absent
+            let mapped = items.map((d) => ({ ...d, id: d.id, manualProgress: typeof d.manualProgress === 'undefined' ? true : d.manualProgress }));
+            // Sort by createdAt ascending (oldest first)
+            mapped = mapped.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+            console.log('Mapped items (sorted oldest first):', mapped);
+
+            // Clear any stale local fallback for this user so Firestore is the single source of truth
+            try {
+              const storageKey = `tracker.cards.v1.${user.id}`;
+              if (localStorage.getItem(storageKey)) {
+                localStorage.removeItem(storageKey);
+              }
+            } catch (e) {}
+
+            // Remove any Firestore items that we've just saved locally (pendingSavedIds) - they'll already be in state
+            const filteredMapped = mapped.filter(m => !pendingSavedIds.current.has(m.id));
+
+            setCards(prevCards => {
+              // Remove temp cards that match incoming Firestore items (by title/details/editing)
+              const tempCards = prevCards.filter(c => {
+                if (!/^\d+$/.test(String(c.id))) return false;
+                return !filteredMapped.some(fc => fc.title === c.title && fc.details === c.details && fc.editing === c.editing);
+              });
+
+              // Combine filtered Firestore docs with remaining temp cards
+              const combined = [...filteredMapped, ...tempCards];
+              console.log('Combined result (strict dedupe with pendingSavedIds):', combined);
+              return combined;
+            });
+          });
+        }).catch((e) => {
+          loadLocal();
         });
       } catch (e) {
         // if firestore not available, fallback
@@ -196,6 +212,10 @@ function SingleCardArea({ user }) {
   const [drafts, setDrafts] = useState({});
   const [congratsFor, setCongratsFor] = useState(null);
   const lastAddRef = useRef(0);
+  const lastDeleteRef = useRef(0);
+  const lastCompletionRef = useRef({});
+  const pendingOperations = useRef(new Set()); // Track pending operations to avoid listener conflicts
+  const pendingSavedIds = useRef(new Set()); // recently saved firestore ids to ignore briefly in listener
 
   useEffect(() => {
     // focus any card that is in editing mode
@@ -217,6 +237,11 @@ function SingleCardArea({ user }) {
     // If a deadline exists, totalDays = days between createdAt and deadline (at least 1).
     // percent = completions / totalDays * 100.
     const completions = card.completions || 0;
+    // If this card uses manual progress (simple mode), treat any completion as full completion.
+    // This makes simple habits show the congratulations overlay after the first completion.
+    if (card.manualProgress) {
+      return completions > 0 ? 100 : 0;
+    }
     if (card.deadline) {
       const start = card.createdAt ? (typeof card.createdAt === 'number' ? card.createdAt : new Date(card.createdAt).getTime()) : Date.now();
       const end = new Date(card.deadline).getTime();
@@ -243,13 +268,14 @@ function SingleCardArea({ user }) {
     }
   }, [editingTitleId]);
 
+  // Note: Auto-save removed to prevent unwanted saves. Users must explicitly save cards.
+
   function addCard() {
     // debounce rapid double calls (pointerdown + click)
     const now = Date.now();
-    if (now - (lastAddRef.current || 0) < 200) return;
+    if (now - (lastAddRef.current || 0) < 500) return; // Increased debounce to 500ms
     lastAddRef.current = now;
     
-    console.debug('addCard invoked');
     const id = Date.now();
     // rotation between -15 and +15 degrees
     const min = -15;
@@ -269,45 +295,19 @@ function SingleCardArea({ user }) {
       ownerId: user?.id || 'guest',
       createdAt: Date.now(),
       editing: true,
+      manualProgress: true,
       rotation,
     };
     
-    // Always add the card to local state first for immediate feedback
+    // Only add to local state - don't save to Firestore until user explicitly saves
     setCards((s) => [newCard, ...s]);
     
     // initialize draft for the new card
     setDrafts((d) => ({ ...d, [id]: { title: '', details: '', deadline: '', showAdvanced: false, completions: 0 } }));
-    
-    // Then try to persist to Firestore if user is logged in
-    if (user && user.id) {
-      import('./lib/firebaseClient').then(({ saveCard }) => {
-        saveCard(user.id, newCard).then((saved) => {
-          // Update with Firestore ID if different
-          if (saved.id !== newCard.id) {
-            setCards((s) => s.map(c => c.id === newCard.id ? { ...saved, editing: true } : c));
-            // Update drafts with new ID
-            setDrafts((d) => {
-              const newDrafts = { ...d };
-              if (newDrafts[newCard.id]) {
-                newDrafts[saved.id] = newDrafts[newCard.id];
-                delete newDrafts[newCard.id];
-              }
-              return newDrafts;
-            });
-          }
-        }).catch((error) => {
-          console.error('Failed to save card to Firestore:', error);
-          // Card is already in local state, so no action needed
-        });
-      }).catch((error) => {
-        console.error('Failed to load Firebase client:', error);
-        // Card is already in local state, so no action needed
-      });
-    }
   }
 
   function saveCard(id) {
-    console.debug('saveCard called for id:', id);
+    console.log('SaveCard called for ID:', id);
     
     // Force any pending state updates to complete immediately
     flushSync(() => {
@@ -325,43 +325,74 @@ function SingleCardArea({ user }) {
     const titleValue = d.title || (titleEl ? titleEl.value : '');
     const detailsValue = d.details || (detailsEl ? detailsEl.value : '');
     const deadlineValue = d.deadline || (deadlineEl ? deadlineEl.value : '');
-    
-    console.debug('Final values:', { titleValue, detailsValue, deadlineValue, showAdvanced: d.showAdvanced });
+
+    console.log('Save data:', { titleValue, detailsValue, deadlineValue, drafts: d });
 
     const patch = {
-      title: titleValue || undefined,
-      details: detailsValue || undefined,
-      deadline: deadlineValue || undefined,
+      title: titleValue || 'Untitled Habit',
+      details: detailsValue || '',
+      deadline: deadlineValue || '',
       advanced: !!d.showAdvanced,
-      completions: d.completions ?? undefined,
+      manualProgress: !d.showAdvanced,
+      completions: d.completions ?? 0,
       editing: false,
     };
-    
-    console.debug('Final patch:', patch);
 
     if (user && user.id) {
-      import('./lib/firebaseClient').then(({ saveCard }) => {
-        // find existing card doc id or create a new one
+      import('./lib/firebaseClient_Enhanced').then(({ saveCard }) => {
         const existing = cards.find((c) => c.id === id);
-        // if existing.id looks like a firestore id (not numeric), use it
+        // For temporary cards, remove the ID so Firestore creates a new one
+        const isTemporary = /^\d+$/.test(String(id));
         const payload = { ...existing, ...patch };
+        if (isTemporary) {
+          delete payload.id;
+        }
         saveCard(user.id, payload).then((saved) => {
-          setCards((s) => s.map((c) => (c.id === id ? saved : c)));
-        }).catch(() => {
+          if (isTemporary) {
+            // Replace temp card in-place with the saved card immediately to avoid flash
+            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
+            // mark this saved id as pending so listener won't re-add it briefly
+            pendingSavedIds.current.add(saved.id);
+            setTimeout(() => pendingSavedIds.current.delete(saved.id), 2000);
+            // clean up draft for temp id
+            setDrafts((d0) => {
+              const copy = { ...d0 };
+              delete copy[id];
+              return copy;
+            });
+          } else {
+            // Update existing card
+            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
+            setDrafts((d0) => {
+              const copy = { ...d0 };
+              delete copy[id];
+              return copy;
+            });
+          }
+        }).catch((error) => {
           setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+          setDrafts((d0) => {
+            const copy = { ...d0 };
+            delete copy[id];
+            return copy;
+          });
         });
-      }).catch(() => {
+      }).catch((error) => {
         setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+        setDrafts((d0) => {
+          const copy = { ...d0 };
+          delete copy[id];
+          return copy;
+        });
       });
     } else {
       setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+      setDrafts((d0) => {
+        const copy = { ...d0 };
+        delete copy[id];
+        return copy;
+      });
     }
-
-    setDrafts((d0) => {
-      const copy = { ...d0 };
-      delete copy[id];
-      return copy;
-    });
   }
 
   function updateField(id, patch) {
@@ -389,47 +420,108 @@ function SingleCardArea({ user }) {
   }
 
   function cancelEdit(id) {
-    // revert editing flag and discard draft
-    setCards((s) => s.map((x) => (x.id === id ? { ...x, editing: false } : x)));
-    setDrafts((d) => {
-      const copy = { ...d };
-      delete copy[id];
-      return copy;
-    });
+    // Check if this is a new card that hasn't been saved yet (has temporary numeric ID and empty title)
+    const card = cards.find(c => c.id === id);
+    const isUnsavedNewCard = card && 
+      /^\d+$/.test(String(card.id)) && // temporary numeric ID
+      (!card.title || card.title.trim() === '') && // no title set
+      (!card.details || card.details.trim() === ''); // no details set
+    
+    if (isUnsavedNewCard) {
+      // Remove the card entirely since it's new and unsaved
+      setCards((s) => s.filter((c) => c.id !== id));
+      setDrafts((d) => {
+        const copy = { ...d };
+        delete copy[id];
+        return copy;
+      });
+    } else {
+      // Just exit edit mode for existing cards
+      setCards((s) => s.map((x) => (x.id === id ? { ...x, editing: false } : x)));
+      setDrafts((d) => {
+        const copy = { ...d };
+        delete copy[id];
+        return copy;
+      });
+    }
   }
 
   function recordCompletion(id) {
-    // compute using current state to deterministically know if this completion finishes the habit
+    console.log('Recording completion for card:', id);
+    
+    // Prevent rapid double-clicks on completion button
+    const now = Date.now();
+    if (now - (lastCompletionRef.current?.[id] || 0) < 1000) return;
+    if (!lastCompletionRef.current) lastCompletionRef.current = {};
+    lastCompletionRef.current[id] = now;
+    
     const current = cards.find((c) => c.id === id);
-    if (!current) return;
+    if (!current) {
+      console.log('Card not found for completion:', id);
+      return;
+    }
+    
+    // Prevent recording completion on cards without a title
+    if (!current.title || current.title.trim() === '') {
+      alert('Please add a title to this habit before recording progress.');
+      return;
+    }
+    
     const newCompletions = (current.completions || 0) + 1;
     const newProgress = computeAutoPercent({ ...current, completions: newCompletions });
     const newStreak = (current.streak || 0) + 1;
 
-    // update state
-      const patch = { completions: newCompletions, progress: newProgress, streak: newStreak, completed: newProgress >= 100, anim: true };
-      if (user && user.id) {
-        import('./lib/firebaseClient').then(({ saveCard }) => {
-          const existing = cards.find((c) => c.id === id) || {};
-          saveCard(user.id, { ...existing, ...patch }).then((saved) => {
-            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
-          }).catch(() => {
-            setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-          });
-        }).catch(() => {
-          setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-        });
-      } else {
-        setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-      }
+    console.log('Completion data:', { current, newCompletions, newProgress, newStreak });
 
-    // if finished, show congrats overlay (persist until user acts)
-    if (newProgress >= 100) setCongratsFor(id);
+    // update state
+    const patch = { 
+      completions: newCompletions, 
+      progress: newProgress, 
+      streak: newStreak, 
+      completed: newProgress >= 100, 
+      anim: true 
+    };
+    
+    // Update local state immediately
+    setCards((s) => s.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    
+    if (user && user.id) {
+      import('./lib/firebaseClient_Enhanced').then(({ saveCard }) => {
+        const payload = { ...current, ...patch };
+        
+        // For temporary cards, remove ID so Firestore creates proper one
+        const isTemporary = /^\d+$/.test(String(id));
+        if (isTemporary) {
+          delete payload.id;
+        }
+        
+        console.log('Saving completion to Firestore:', payload);
+        
+        saveCard(user.id, payload).then((saved) => {
+          console.log('Completion saved to Firestore:', saved);
+          
+          if (isTemporary) {
+            // Replace temporary card with Firestore card
+            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
+          } else {
+            // Update existing card
+            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
+          }
+        }).catch((err) => {
+          console.error('Failed to save completion:', err);
+        });
+      }).catch((err) => {
+        console.error('Failed to import saveCard for completion:', err);
+      });
+    }
+
+    // if finished, show congrats overlay
+    if (newProgress >= 100 && !current.manualProgress) setCongratsFor(id);
 
     // clear animation after short delay
     setTimeout(() => {
       setCards((s) => s.map((c) => (c.id === id ? { ...c, anim: false } : c)));
-    }, 800);
+    }, 150);
   }
 
   function restartCard(id) {
@@ -438,12 +530,30 @@ function SingleCardArea({ user }) {
   }
 
   function deleteCard(id) {
+    // Prevent rapid double-clicks
+    const now = Date.now();
+    if (now - (lastDeleteRef.current || 0) < 1000) return; // 1 second debounce for delete
+    lastDeleteRef.current = now;
+    
+    // Mark as pending operation
+    pendingOperations.current.add(id);
+    
     if (user && user.id) {
-      import('./lib/firebaseClient').then(({ deleteCard }) => {
-        deleteCard(user.id, id).then(() => setCards((s) => s.filter((c) => c.id !== id))).catch(() => setCards((s) => s.filter((c) => c.id !== id)));
-      }).catch(() => setCards((s) => s.filter((c) => c.id !== id)));
+      import('./lib/firebaseClient_Enhanced').then(({ deleteCard }) => {
+        deleteCard(user.id, id).then(() => {
+          setCards((s) => s.filter((c) => c.id !== id));
+          pendingOperations.current.delete(id);
+        }).catch(() => {
+          setCards((s) => s.filter((c) => c.id !== id));
+          pendingOperations.current.delete(id);
+        });
+      }).catch(() => {
+        setCards((s) => s.filter((c) => c.id !== id));
+        pendingOperations.current.delete(id);
+      });
     } else {
       setCards((s) => s.filter((c) => c.id !== id));
+      pendingOperations.current.delete(id);
     }
     setCongratsFor(null);
   }
@@ -557,11 +667,9 @@ function SingleCardArea({ user }) {
                       ref={(el) => (refs.current[`deadline-${card.id}`] = el)}
                       value={drafts[card.id]?.deadline ?? ''}
                       onChange={(e) => {
-                        console.debug('Date onChange:', card.id, e.target.value);
                         setDrafts((d) => ({ ...d, [card.id]: { ...(d[card.id] || {}), deadline: e.target.value } }));
                       }}
                       onBlur={(e) => {
-                        console.debug('Date onBlur:', card.id, e.target.value);
                         setDrafts((d) => ({ ...d, [card.id]: { ...(d[card.id] || {}), deadline: e.target.value } }));
                       }}
                       className="text-sm bg-transparent outline-none"
@@ -589,7 +697,7 @@ function SingleCardArea({ user }) {
 
                   <div className="flex items-center justify-between">
                     <div className="text-xs text-gray-500">Due: {card.deadline ? new Date(card.deadline).toLocaleDateString() : '—'}</div>
-                    {(card.deadline || card.overrideProgress || card.advanced || (card.completions && card.completions > 0) || (card.progress && card.progress > 0)) && (
+                    {card.advanced && (
                       <div className="flex items-center gap-2">
                         <CircularProgress percent={displayPercent(card)} size={40} stroke={6} />
                         <div className="text-xs text-gray-600">{displayPercent(card)}%</div>
@@ -601,7 +709,7 @@ function SingleCardArea({ user }) {
                   <div className="mt-3 flex justify-center items-center gap-4">
                     <button
                       onClick={() => recordCompletion(card.id)}
-                      className={`w-10 h-10 rounded-full flex items-center justify-center border ${card.anim ? 'bg-green-400' : 'bg-white'}`}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center border ${card.anim ? 'bg-green-500' : 'bg-white'}`}
                       title="Mark completion"
                     >
                       ✓
@@ -627,7 +735,7 @@ function SingleCardArea({ user }) {
         ))}
         {/* add button sits inside the flow after the cards */}
         <button
-          onPointerDown={(e) => { e.stopPropagation(); addCard(); }}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); addCard(); }}
           aria-label="Add habit"
           title="Add habit"
@@ -635,6 +743,90 @@ function SingleCardArea({ user }) {
         >
           +
         </button>
+        
+        {/* Temporary: Debug card cleanup button */}
+        {process.env.NODE_ENV === 'development' && (
+          <button
+            onClick={async () => {
+              if (!user || !user.id) {
+                alert('Please log in first');
+                return;
+              }
+              
+              const confirmDelete = window.confirm(
+                'This will delete all cards with titles like "dev-probe", "test", "debug", or empty titles. Continue?'
+              );
+              
+              if (!confirmDelete) return;
+              
+              try {
+                const { deleteCard } = await import('./lib/firebaseClient_Enhanced');
+                
+                // Find problematic cards
+                const problematicCards = cards.filter(card => {
+                  const title = (card.title || '').toLowerCase();
+                  return title.includes('dev-probe') || 
+                         title.includes('probe') || 
+                         title.includes('debug') || 
+                         title.includes('test') ||
+                         title.trim() === '' ||
+                         title === 'untitled habit';
+                });
+                
+                console.log('Found problematic cards:', problematicCards);
+                
+                // Delete each problematic card
+                for (const card of problematicCards) {
+                  try {
+                    await deleteCard(user.id, card.id);
+                    console.log('Deleted card:', card.id, card.title);
+                  } catch (error) {
+                    console.error('Failed to delete card:', card.id, error);
+                  }
+                }
+                
+                alert(`Cleanup complete! Deleted ${problematicCards.length} problematic cards.`);
+              } catch (error) {
+                console.error('Cleanup failed:', error);
+                alert('Cleanup failed: ' + error.message);
+              }
+            }}
+            className="ml-4 px-3 py-1 bg-red-500 text-white rounded text-sm"
+            title="Clean up test/debug cards"
+          >
+            🧹 Cleanup
+          </button>
+        )}
+        
+        {/* Temporary: Show current cards for debugging */}
+        {process.env.NODE_ENV === 'development' && (
+          <button
+            onClick={() => {
+              console.log('=== CURRENT CARDS ===');
+              console.log('Total cards:', cards.length);
+              cards.forEach((card, index) => {
+                console.log(`Card ${index + 1}:`, {
+                  id: card.id,
+                  title: card.title,
+                  details: card.details,
+                  idType: /^\d+$/.test(String(card.id)) ? 'temporary' : 'firestore',
+                  editing: card.editing
+                });
+              });
+              
+              // Also show in alert for easy viewing
+              const cardSummary = cards.map((card, i) => 
+                `${i + 1}. "${card.title}" (ID: ${card.id})`
+              ).join('\n');
+              
+              alert(`Current cards (${cards.length} total):\n\n${cardSummary}`);
+            }}
+            className="ml-2 px-3 py-1 bg-blue-500 text-white rounded text-sm"
+            title="Show all current cards"
+          >
+            📋 Show Cards
+          </button>
+        )}
       </div>
       {/* Congratulation overlay */}
       {congratsFor && (

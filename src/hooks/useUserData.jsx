@@ -1,7 +1,7 @@
 // Custom hooks for user data management
 import { useState, useEffect, useCallback } from 'react';
-import { onAuthChange } from './firebaseClient';
-import * as fb from './firebaseClient_Enhanced';
+import { onAuthChange } from '../lib/firebaseClient';
+import * as fb from '../lib/firebaseClient_Enhanced';
 
 // Auth hook
 export function useAuth() {

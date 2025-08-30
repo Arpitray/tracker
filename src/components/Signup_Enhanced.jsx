@@ -1,7 +1,7 @@
 // Enhanced Signup Component with Professional UI/UX
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { registerUser, signInWithGoogle } from '../lib/firebaseClient';
+import { registerUser, signInWithGoogle, createOrUpdateUserDoc } from '../lib/firebaseClient_Enhanced';
 
 function Signup({ onLogin }) {
   const navigate = useNavigate();
@@ -138,6 +138,10 @@ function Signup({ onLogin }) {
 
     try {
       const user = await registerUser(formData.email, formData.password);
+      
+      // Create user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = {
         id: user.uid,
         email: user.email,
@@ -168,6 +172,10 @@ function Signup({ onLogin }) {
     setUi(prev => ({ ...prev, loading: true, error: '' }));
     try {
       const user = await signInWithGoogle();
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = {
         id: user.uid,
         email: user.email,

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useUserData } from '../hooks/useUserData';
+import SeedTestData from './SeedTestData';
 
 const UserSettings = () => {
   const { auth, preferences, profile, stats, dataManagement } = useUserData();
@@ -336,6 +337,13 @@ const UserSettings = () => {
                 >
                   {isDeleting ? 'Deleting...' : 'Delete Account'}
                 </button>
+              </div>
+              
+              {/* Seed test data */}
+              <div className="bg-white p-4 rounded-lg border border-dashed border-gray-200">
+                <h4 className="text-sm font-medium text-gray-900 mb-2">Seed Test Data</h4>
+                <p className="text-sm text-gray-500">Create a sample habit and a completion event for testing.</p>
+                <SeedTestData />
               </div>
             </div>
           </div>

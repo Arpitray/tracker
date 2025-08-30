@@ -1,7 +1,7 @@
 // Enhanced Login Component with Professional UI/UX
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { loginUser, signInWithGoogle, sendPasswordReset } from '../lib/firebaseClient';
+import { loginUser, signInWithGoogle, sendPasswordReset, createOrUpdateUserDoc } from '../lib/firebaseClient_Enhanced';
 
 function Login({ onLogin }) {
   const navigate = useNavigate();
@@ -49,6 +49,10 @@ function Login({ onLogin }) {
 
     try {
       const user = await loginUser(formData.email, formData.password);
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = {
         id: user.uid,
         email: user.email,
@@ -81,6 +85,10 @@ function Login({ onLogin }) {
     setUi(prev => ({ ...prev, loading: true, error: '' }));
     try {
       const user = await signInWithGoogle();
+      
+      // Create/update user document in Firestore
+      await createOrUpdateUserDoc(user);
+      
       const userData = {
         id: user.uid,
         email: user.email,
