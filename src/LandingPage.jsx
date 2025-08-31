@@ -100,9 +100,9 @@ function SingleCardArea({ user }) {
             console.log('Firestore listener received items:', items);
             // normalize doc ids as id and default manualProgress when absent
             let mapped = items.map((d) => ({ ...d, id: d.id, manualProgress: typeof d.manualProgress === 'undefined' ? true : d.manualProgress }));
-            // Sort by createdAt ascending (oldest first)
-            mapped = mapped.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-            console.log('Mapped items (sorted oldest first):', mapped);
+            // Sort by createdAt descending (newest first)
+            mapped = mapped.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            console.log('Mapped items (sorted newest first):', mapped);
 
             // Clear any stale local fallback for this user so Firestore is the single source of truth
             try {
@@ -348,9 +348,9 @@ function SingleCardArea({ user }) {
           delete payload.id;
         }
         saveCard(user.id, payload).then((saved) => {
-          if (isTemporary) {
-            // Replace temp card in-place with the saved card immediately to avoid flash
-            setCards((s) => s.map((c) => (c.id === id ? saved : c)));
+            if (isTemporary) {
+            // Remove temp card and insert saved card at the start so saved card appears first
+            setCards((s) => [saved, ...s.filter((c) => c.id !== id)]);
             // mark this saved id as pending so listener won't re-add it briefly
             pendingSavedIds.current.add(saved.id);
             setTimeout(() => pendingSavedIds.current.delete(saved.id), 2000);
@@ -744,89 +744,7 @@ function SingleCardArea({ user }) {
           +
         </button>
         
-        {/* Temporary: Debug card cleanup button */}
-        {process.env.NODE_ENV === 'development' && (
-          <button
-            onClick={async () => {
-              if (!user || !user.id) {
-                alert('Please log in first');
-                return;
-              }
-              
-              const confirmDelete = window.confirm(
-                'This will delete all cards with titles like "dev-probe", "test", "debug", or empty titles. Continue?'
-              );
-              
-              if (!confirmDelete) return;
-              
-              try {
-                const { deleteCard } = await import('./lib/firebaseClient_Enhanced');
-                
-                // Find problematic cards
-                const problematicCards = cards.filter(card => {
-                  const title = (card.title || '').toLowerCase();
-                  return title.includes('dev-probe') || 
-                         title.includes('probe') || 
-                         title.includes('debug') || 
-                         title.includes('test') ||
-                         title.trim() === '' ||
-                         title === 'untitled habit';
-                });
-                
-                console.log('Found problematic cards:', problematicCards);
-                
-                // Delete each problematic card
-                for (const card of problematicCards) {
-                  try {
-                    await deleteCard(user.id, card.id);
-                    console.log('Deleted card:', card.id, card.title);
-                  } catch (error) {
-                    console.error('Failed to delete card:', card.id, error);
-                  }
-                }
-                
-                alert(`Cleanup complete! Deleted ${problematicCards.length} problematic cards.`);
-              } catch (error) {
-                console.error('Cleanup failed:', error);
-                alert('Cleanup failed: ' + error.message);
-              }
-            }}
-            className="ml-4 px-3 py-1 bg-red-500 text-white rounded text-sm"
-            title="Clean up test/debug cards"
-          >
-            🧹 Cleanup
-          </button>
-        )}
-        
-        {/* Temporary: Show current cards for debugging */}
-        {process.env.NODE_ENV === 'development' && (
-          <button
-            onClick={() => {
-              console.log('=== CURRENT CARDS ===');
-              console.log('Total cards:', cards.length);
-              cards.forEach((card, index) => {
-                console.log(`Card ${index + 1}:`, {
-                  id: card.id,
-                  title: card.title,
-                  details: card.details,
-                  idType: /^\d+$/.test(String(card.id)) ? 'temporary' : 'firestore',
-                  editing: card.editing
-                });
-              });
-              
-              // Also show in alert for easy viewing
-              const cardSummary = cards.map((card, i) => 
-                `${i + 1}. "${card.title}" (ID: ${card.id})`
-              ).join('\n');
-              
-              alert(`Current cards (${cards.length} total):\n\n${cardSummary}`);
-            }}
-            className="ml-2 px-3 py-1 bg-blue-500 text-white rounded text-sm"
-            title="Show all current cards"
-          >
-            📋 Show Cards
-          </button>
-        )}
+  {/* development-only debug buttons removed */}
       </div>
       {/* Congratulation overlay */}
       {congratsFor && (
