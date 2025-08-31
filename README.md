@@ -10,3 +10,12 @@ Currently, two official plugins are available:
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+## Deploying to Vercel
+
+This project can be deployed to Vercel as a static Vite build. A `vercel.json` file is included to ensure Vercel uses the static build output.
+
+- Build command: `npm run build` (or `npm run vercel-build`)
+- Output directory: `dist`
+
+Set the Firebase env variables in the Vercel project settings (VITE_FB_API_KEY, VITE_FB_AUTH_DOMAIN, VITE_FB_PROJECT_ID, etc.) before deploying.
